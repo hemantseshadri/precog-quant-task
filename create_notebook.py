@@ -26,7 +26,7 @@ warnings.filterwarnings('ignore')
 from google.colab import drive
 drive.mount('/content/drive')
 
-data_dir = '/content/drive/MyDrive/processed_data'
+data_dir = '/content/drive/MyDrive/precog_data/processed_data'
 """
 
 md_loading = """## 1. Data Loading, Target Definition & New Feature Engineering
