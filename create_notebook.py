@@ -2,37 +2,31 @@ import nbformat as nbf
 
 nb = nbf.v4.new_notebook()
 
-md_header = """# Part 2 (Revised): Model Training with LSTM Neural Network
-In this notebook, we use the engineered features from Part 1 to train an **LSTM (Long Short-Term Memory)** Deep Learning model.
+md_header = """# Part 2: Model Training & Strategy Formulation
+In this notebook, we will use the engineered features from Part 1 to train an advanced XGBoost predictive model.
 
-Unlike XGBoost, which looks at single days in isolation, an LSTM looks at sequential chunks of time (a 10-day lookback window) to understand the *trajectory* of the price before predicting the 5-day forward return.
-
-**Prediction Target:** Regression (5-day forward return).
-**Model:** Keras/TensorFlow LSTM.
+**Prediction Target:** Regression. We will predict the 5-day forward return.
+**Model:** XGBoost Regressor (Tuned Hyperparameters).
 """
 
 code_setup = """import pandas as pd
 import numpy as np
+import xgboost as xgb
+from sklearn.metrics import mean_squared_error, r2_score
 import matplotlib.pyplot as plt
 import os
 import glob
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, r2_score
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
 
 # Mount Google Drive to save the signals directly to your drive
 from google.colab import drive
 drive.mount('/content/drive')
 
 # Assuming your processed_data folder was uploaded to this path:
-# (Update this if your processed_data folder is located somewhere else)
 data_dir = '/content/drive/MyDrive/processed_data' 
 """
 
-md_loading = """## 1. Data Loading and Scaling
-Deep learning models are highly sensitive to unscaled data. We will use `StandardScaler` to normalize our 14 features."""
+md_loading = """## 1. Data Loading and Target Definition
+We load the processed CSVs, and define our target variable. We shift the `Ret_5d` column backwards by 5 days."""
 
 code_loading = """all_files = sorted(glob.glob(os.path.join(data_dir, "*.csv")))
 df_list = []
@@ -51,118 +45,88 @@ full_df.dropna(inplace=True)
 # Sort chronologically
 full_df['Date'] = pd.to_datetime(full_df['Date'])
 full_df.sort_values(by=['Date', 'Asset'], inplace=True)
+print(f"Total dataset size after dropping NaNs: {full_df.shape}")
+"""
+
+md_split = """## 2. Chronological Train/Test Split
+We will train on the first 80% of dates, and test on the remaining 20% to prevent look-ahead bias."""
+
+code_split = """dates = full_df['Date'].unique()
+split_idx = int(len(dates) * 0.8)
+train_dates = dates[:split_idx]
+test_dates = dates[split_idx:]
+
+train_df = full_df[full_df['Date'].isin(train_dates)].copy()
+test_df = full_df[full_df['Date'].isin(test_dates)].copy()
 
 features = [
     'Ret_1d', 'Ret_5d', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
     'SMA_10', 'SMA_50', 'Dist_SMA_50', 'BB_Upper', 'BB_Lower',
     'Vol_20d', 'Vol_SMA_20', 'Vol_ROC'
 ]
+target = 'Target_5d'
 
-# Scale features (Critical for LSTM)
-scaler = StandardScaler()
-full_df[features] = scaler.fit_transform(full_df[features])
+X_train, y_train = train_df[features], train_df[target]
+X_test, y_test = test_df[features], test_df[target]
 
-print(f"Total dataset size: {full_df.shape}")
+print(f"Training samples: {len(X_train)}")
+print(f"Testing samples: {len(X_test)}")
 """
 
-md_seq = """## 2. Sequence Generation & Train/Test Split
-An LSTM requires 3D data: `[Samples, TimeSteps, Features]`. We will create a sliding window of 10 days (TimeSteps) for each asset.
-We then split chronologically: first 80% for training, last 20% for testing."""
+md_train = """## 3. Tuned XGBoost Regression
+To beat the market, we are heavily tuning the XGBoost hyperparameters to extract maximum alpha from the features:
+- **`learning_rate=0.01` & `n_estimators=500`:** A slower learning rate with more trees allows the model to learn complex, subtle patterns without overfitting.
+- **`max_depth=4`:** Shallow trees prevent the model from memorizing financial noise.
+- **`reg_alpha` (L1) & `reg_lambda` (L2):** Strong regularization to aggressively punish useless features and prevent the model from becoming overconfident."""
 
-code_seq = """lookback = 10
-
-def create_sequences(asset_df):
-    X, y, dates, assets = [], [], [], []
-    feature_data = asset_df[features].values
-    target_data = asset_df['Target_5d'].values
-    date_data = asset_df['Date'].values
-    asset_name = asset_df['Asset'].iloc[0]
-    
-    for i in range(len(asset_df) - lookback):
-        X.append(feature_data[i : i + lookback])
-        # The target corresponds to the last day of the sequence
-        y.append(target_data[i + lookback - 1])
-        dates.append(date_data[i + lookback - 1])
-        assets.append(asset_name)
-        
-    return np.array(X), np.array(y), np.array(dates), np.array(assets)
-
-print("Building 3D sequences... (this may take a minute)")
-X_list, y_list, d_list, a_list = [], [], [], []
-
-for asset, group in full_df.groupby('Asset'):
-    # ensure sorted by date for each asset
-    group = group.sort_values('Date')
-    X_a, y_a, d_a, a_a = create_sequences(group)
-    X_list.append(X_a)
-    y_list.append(y_a)
-    d_list.append(d_a)
-    a_list.append(a_a)
-
-X_all = np.concatenate(X_list)
-y_all = np.concatenate(y_list)
-dates_all = np.concatenate(d_list)
-assets_all = np.concatenate(a_list)
-
-# Split 80/20 chronologically
-unique_dates = np.sort(np.unique(dates_all))
-split_idx = int(len(unique_dates) * 0.8)
-split_date = unique_dates[split_idx]
-
-train_mask = dates_all < split_date
-test_mask = dates_all >= split_date
-
-X_train, y_train = X_all[train_mask], y_all[train_mask]
-X_test, y_test = X_all[test_mask], y_all[test_mask]
-
-# Save metadata for test set (we need this to generate signals later)
-dates_test = dates_all[test_mask]
-assets_test = assets_all[test_mask]
-close_test = [] # Optional: We don't strictly need close price to generate the raw signal 1 or -1
-
-print(f"X_train shape: {X_train.shape}")
-print(f"X_test shape: {X_test.shape}")
-"""
-
-md_train = """## 3. Build & Train the LSTM Model
-We construct a simple but robust LSTM architecture."""
-
-code_train = """model = Sequential([
-    LSTM(64, input_shape=(lookback, len(features)), return_sequences=False),
-    Dropout(0.2),
-    Dense(32, activation='relu'),
-    Dense(1, activation='linear')
-])
-
-model.compile(optimizer='adam', loss='mse')
-model.summary()
-
-# Train the model
-print("Training LSTM...")
-history = model.fit(
-    X_train, y_train,
-    epochs=10,
-    batch_size=256,
-    validation_data=(X_test, y_test),
-    verbose=1
+code_train = """model = xgb.XGBRegressor(
+    n_estimators=500,        # More trees
+    learning_rate=0.01,      # Slower learning
+    max_depth=4,             # Shallow trees to prevent overfitting noise
+    subsample=0.8,           # Stochastic sampling of rows
+    colsample_bytree=0.8,    # Stochastic sampling of columns
+    reg_alpha=0.5,           # L1 Regularization (Lasso)
+    reg_lambda=1.5,          # L2 Regularization (Ridge)
+    random_state=42,
+    tree_method='hist'       # Uses GPU if available
 )
 
-# Predict on Out-of-Sample Test Set
-preds = model.predict(X_test).flatten()
+print("Training highly-tuned XGBoost...")
+model.fit(
+    X_train, y_train,
+    eval_set=[(X_test, y_test)],
+    verbose=50
+)
+
+# Evaluate
+preds = model.predict(X_test)
+mse = mean_squared_error(y_test, preds)
+r2 = r2_score(y_test, preds)
+print(f"\\nTest MSE: {mse:.6f}")
+print(f"Test R^2: {r2:.6f}")
 """
 
-md_strategy = """## 4. Generate Signals and Export
-We translate the LSTM's forward return predictions into our standard -1, 0, 1 signals, and save them directly to Google Drive."""
+md_importance = """## 4. Feature Importance
+Let's see which features the tuned model relies on."""
 
-code_strategy = """# Reconstruct a DataFrame for the test set
-test_df = pd.DataFrame({
-    'Date': dates_test,
-    'Asset': assets_test,
-    'Target_5d': y_test,
-    'Predicted_Ret_5d': preds
-})
+code_importance = """importances = model.feature_importances_
+feat_imp = pd.Series(importances, index=features).sort_values(ascending=False)
+
+plt.figure(figsize=(10, 6))
+feat_imp.plot(kind='bar')
+plt.title('Tuned XGBoost Feature Importance')
+plt.ylabel('Relative Importance')
+plt.show()
+"""
+
+md_strategy = """## 5. Strategy Logic: Translating Predictions to Signals
+We translate the refined predictions into our standard -1, 0, 1 signals (Top 20% Long, Bottom 20% Short) and export to Google Drive."""
+
+code_strategy = """# Generate predictions ONLY for the 20% Out-Of-Sample Test Set
+test_df['Predicted_Ret_5d'] = model.predict(test_df[features])
 
 def generate_signals(group):
+    # Calculate quantiles for each day
     upper_thresh = group['Predicted_Ret_5d'].quantile(0.80)
     lower_thresh = group['Predicted_Ret_5d'].quantile(0.20)
     
@@ -175,9 +139,12 @@ def generate_signals(group):
     group['Signal'] = np.select(conditions, choices, default=0)
     return group
 
+# Apply logic day-by-day
 print("Generating signals on Out-Of-Sample Data...")
 test_df = test_df.groupby('Date').apply(generate_signals)
-test_df['Close'] = 100 # Dummy close value since backtester uses asset_returns logic in Part 3
+
+# Check signal distribution
+print(test_df['Signal'].value_counts(normalize=True))
 
 # Save directly to Google Drive!
 file_path = '/content/drive/MyDrive/signals.csv'
@@ -190,10 +157,12 @@ nb['cells'] = [
     nbf.v4.new_code_cell(code_setup),
     nbf.v4.new_markdown_cell(md_loading),
     nbf.v4.new_code_cell(code_loading),
-    nbf.v4.new_markdown_cell(md_seq),
-    nbf.v4.new_code_cell(code_seq),
+    nbf.v4.new_markdown_cell(md_split),
+    nbf.v4.new_code_cell(code_split),
     nbf.v4.new_markdown_cell(md_train),
     nbf.v4.new_code_cell(code_train),
+    nbf.v4.new_markdown_cell(md_importance),
+    nbf.v4.new_code_cell(code_importance),
     nbf.v4.new_markdown_cell(md_strategy),
     nbf.v4.new_code_cell(code_strategy)
 ]
@@ -201,4 +170,4 @@ nb['cells'] = [
 with open('Part2_Model_Training.ipynb', 'w') as f:
     nbf.write(nb, f)
 
-print("Notebook Part2_Model_Training.ipynb generated successfully for LSTM!")
+print("Notebook Part2_Model_Training.ipynb generated successfully for Tuned XGBoost!")
