@@ -47,26 +47,48 @@ full_df['Date'] = pd.to_datetime(full_df['Date'])
 full_df.sort_values(by=['Date', 'Asset'], inplace=True)
 
 # ============================================================
-# NEW: Cross-Sectional Features (rank each asset vs peers)
+# Cross-Sectional Features (rank each asset vs peers each day)
 # ============================================================
-# For each day, rank every asset's feature from 0 to 1
-# This tells the model: "This asset has the 3rd highest RSI today out of 100"
 cross_sectional_cols = ['Ret_1d', 'Ret_5d', 'RSI_14', 'MACD_Hist', 'Dist_SMA_50', 'Vol_20d']
 
 for col in cross_sectional_cols:
     full_df[f'{col}_rank'] = full_df.groupby('Date')[col].rank(pct=True)
 
-# NEW: Mean Reversion Signal — how far is today's return from the asset's own 20-day average?
+# ============================================================
+# Engineered Features (per-asset, time-series based)
+# ============================================================
+
+# 1. Mean Reversion Z-Score: how abnormal is today's return vs its own history?
 full_df['Ret_1d_zscore'] = full_df.groupby('Asset')['Ret_1d'].transform(
     lambda x: (x - x.rolling(20).mean()) / x.rolling(20).std()
 )
 
-# NEW: Momentum persistence — is the 5-day trend accelerating or decelerating?
+# 2. Momentum Acceleration: is the 5-day trend speeding up or slowing down?
 full_df['Momentum_accel'] = full_df.groupby('Asset')['Ret_5d'].transform(
     lambda x: x - x.shift(5)
 )
 
-# Drop rows with NaNs (from rolling windows and target shift)
+# 3. Relative Volume: today's volume vs its own 20-day avg (volume spike detector)
+full_df['Rel_Volume'] = full_df.groupby('Asset').apply(
+    lambda g: g['Volume'] / g['Volume'].rolling(20).mean()
+).reset_index(level=0, drop=True)
+
+# 4. Bollinger %B: where is price within the Bollinger Band? (0=lower band, 1=upper band)
+full_df['BB_pctB'] = (full_df['Close'] - full_df['BB_Lower']) / (full_df['BB_Upper'] - full_df['BB_Lower'])
+
+# 5. RSI Regime: is RSI overbought (>70) or oversold (<30)? Encoded as a continuous signal.
+full_df['RSI_deviation'] = full_df['RSI_14'] - 50  # Centered at 0; positive = overbought territory
+
+# 6. Volatility-Adjusted Return: is this return big relative to the asset's own volatility?
+full_df['Vol_adj_ret'] = full_df.groupby('Asset').apply(
+    lambda g: g['Ret_1d'] / g['Ret_1d'].rolling(20).std()
+).reset_index(level=0, drop=True)
+
+# 7. SMA Crossover Signal: short-term trend vs long-term trend
+full_df['SMA_cross'] = (full_df['SMA_10'] - full_df['SMA_50']) / full_df['SMA_50']
+
+# Replace infinities and drop NaNs
+full_df.replace([np.inf, -np.inf], np.nan, inplace=True)
 full_df.dropna(inplace=True)
 
 print(f"Total dataset size: {full_df.shape}")
@@ -84,17 +106,19 @@ test_dates = dates[split_idx:]
 train_df = full_df[full_df['Date'].isin(train_dates)].copy()
 test_df = full_df[full_df['Date'].isin(test_dates)].copy()
 
-# EXPANDED feature list (original 14 + 8 new cross-sectional/engineered features)
+# FULL feature list (original 14 + 13 new engineered features = 27 total)
 features = [
     # Original features
     'Ret_1d', 'Ret_5d', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
     'SMA_10', 'SMA_50', 'Dist_SMA_50', 'BB_Upper', 'BB_Lower',
     'Vol_20d', 'Vol_SMA_20', 'Vol_ROC',
-    # NEW: Cross-sectional rank features
+    # Cross-sectional rank features
     'Ret_1d_rank', 'Ret_5d_rank', 'RSI_14_rank',
     'MACD_Hist_rank', 'Dist_SMA_50_rank', 'Vol_20d_rank',
-    # NEW: Engineered features
-    'Ret_1d_zscore', 'Momentum_accel'
+    # Engineered features
+    'Ret_1d_zscore', 'Momentum_accel',
+    'Rel_Volume', 'BB_pctB', 'RSI_deviation',
+    'Vol_adj_ret', 'SMA_cross'
 ]
 target = 'Target_5d'
 
@@ -117,13 +141,13 @@ Key improvements over the previous version:
 code_train = """model = xgb.XGBRegressor(
     n_estimators=2000,        # High ceiling — early stopping will find the sweet spot
     learning_rate=0.005,      # Very slow learning for subtle pattern detection
-    max_depth=3,              # Very shallow trees — critical for noisy financial data
-    min_child_weight=100,     # Each leaf must have at least 100 samples (prevents memorizing outliers)
-    subsample=0.7,            # Each tree trains on 70% of rows
-    colsample_bytree=0.6,    # Each tree sees only 60% of features
-    gamma=1.0,                # Minimum loss reduction to make a split (prunes weak splits)
-    reg_alpha=1.0,            # L1 regularization
-    reg_lambda=5.0,           # L2 regularization (very strong)
+    max_depth=4,              # Slightly deeper to capture feature interactions
+    min_child_weight=50,      # Lowered to let more features participate in splits
+    subsample=0.75,           # Each tree trains on 75% of rows
+    colsample_bytree=0.7,     # Each tree sees 70% of features (was 60%)
+    gamma=0.5,                # Loosened to allow more splits
+    reg_alpha=0.5,            # L1 regularization (loosened)
+    reg_lambda=3.0,           # L2 regularization (loosened from 5.0)
     random_state=42,
     tree_method='hist',
     n_jobs=-1
