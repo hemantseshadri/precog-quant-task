@@ -212,7 +212,7 @@ test_df = test_df.groupby('Date').apply(generate_signals)
 print(test_df['Signal'].value_counts(normalize=True))
 
 # Save directly to Google Drive
-file_path = '/content/drive/MyDrive/signals.csv'
+file_path = '/content/drive/MyDrive/signals_v2.csv'
 test_df[['Date', 'Asset', 'Close', 'Target_5d', 'Predicted_Ret_5d', 'Signal']].to_csv(file_path, index=False)
 print(f"\\nSignals saved successfully to: {file_path}")
 """
