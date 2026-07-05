@@ -4,8 +4,8 @@ nb = nbf.v4.new_notebook()
 
 md_header = """# Part 2 (V4): Same Model as V3, Reduced Trading Frequency
 This version uses the **exact same XGBoost model and features as V3**, but changes the signal generation:
-- **30% Long / 30% Short** (instead of 20/20)
-- **Rebalance only 2 days per week** (Monday & Thursday) to drastically reduce turnover and transaction costs.
+- **10% Long / 10% Short** (highly concentrated positions)
+- **Rebalance only 3 days per week** (Mon, Wed, Fri) to drastically reduce turnover and transaction costs.
 
 The model predictions are identical to V3 — only the portfolio construction rules have changed.
 """
@@ -116,29 +116,29 @@ print(f"\\nTest MSE:  {mse:.6f}")
 print(f"Test R^2:  {r2:.6f}")
 """
 
-md_strategy = """## 4. V4 Signal Logic: 30% Long/Short + 2 Days Per Week
+md_strategy = """## 4. V4 Signal Logic: 10% Long/Short + 3 Days Per Week
 **What's different from V3:**
-- Thresholds changed from Top/Bottom 20% to **Top/Bottom 30%** (more diversified positions)
-- Signals are only generated on **Monday and Thursday** (rebalance 2x per week instead of daily)
+- Thresholds changed from Top/Bottom 20% to **Top/Bottom 10%** (more concentrated, higher conviction positions)
+- Signals are only generated on **Mon, Wed, Fri** (rebalance 3x per week instead of daily)
 - On non-trading days, the signal is set to 0 (hold cash / flat)"""
 
 code_strategy = """test_df['Predicted_Ret_5d'] = preds
 
-# Only generate signals on Monday (0) and Thursday (3)
-trading_days = [0, 3]  # 0=Monday, 3=Thursday
+# Only generate signals on Monday (0), Wednesday (2), and Friday (4)
+trading_days = [0, 2, 4]
 test_df['DayOfWeek'] = test_df['Date'].dt.dayofweek
 
 def generate_signals_v4(group):
     day_of_week = group['DayOfWeek'].iloc[0]
     
-    # Only trade on Monday and Thursday
+    # Only trade on Mon, Wed, Fri
     if day_of_week not in trading_days:
         group['Signal'] = 0
         return group
     
-    # 30% Long / 30% Short (instead of 20/20)
-    upper_thresh = group['Predicted_Ret_5d'].quantile(0.70)
-    lower_thresh = group['Predicted_Ret_5d'].quantile(0.30)
+    # 10% Long / 10% Short (highly concentrated)
+    upper_thresh = group['Predicted_Ret_5d'].quantile(0.90)
+    lower_thresh = group['Predicted_Ret_5d'].quantile(0.10)
     
     conditions = [
         (group['Predicted_Ret_5d'] > upper_thresh),
@@ -149,7 +149,7 @@ def generate_signals_v4(group):
     group['Signal'] = np.select(conditions, choices, default=0)
     return group
 
-print("Generating V4 signals (30% L/S, 2 days/week)...")
+print("Generating V4 signals (10% L/S, 3 days/week)...")
 test_df = test_df.groupby('Date').apply(generate_signals_v4)
 
 print("\\nSignal distribution:")
