@@ -16,16 +16,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-# ==========================================
-# IMPORTANT: UPDATE THIS PATH FOR GOOGLE COLAB
-# ==========================================
-# If running in Colab, mount drive first:
-# from google.colab import drive
-# drive.mount('/content/drive')
-# file_path = '/content/drive/MyDrive/PreCog/signals/strategy_signals.csv'
+from google.colab import drive
+drive.mount('/content/drive')
 
-# Defaulting to local path for now:
-file_path = 'signals.csv' if os.path.exists('signals.csv') else 'signals/strategy_signals.csv'
+file_path = '/content/drive/MyDrive/signals_v2.csv'
 """
 
 md_loading = """## 1. Load Data and Pivot
